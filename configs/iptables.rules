@@ -1,0 +1,122 @@
+# 
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0] :OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A PREROUTING -i enp2s0 -p tcp --dport 4224 -j DNAT --to 10.0.1.12
+-A PREROUTING -i enp2s0 -p udp --dport 4224 -j DNAT --to 10.0.1.12
+-A PREROUTING -i enp2s0 -p tcp --dport 31137 -j DNAT --to 10.0.1.12:22
+-A POSTROUTING -s 10.0.1.0/24 -o enp2s0 -j MASQUERADE
+COMMIT
+
+# 
+# 
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+:fw-interfaces - [0:0]
+:fw-open - [0:0]
+:fw-close - [0:0]
+:fw-wan_blocks - [0:0]
+:fw-lan_blocks - [0:0]
+#-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+-A INPUT -f -j NFLOG --nflog-group 2 --nflog-prefix "IPT FRAG: "
+-A INPUT -f -j DROP
+#-A INPUT -i enp2s0 -m set --match-set wan_blocks src -j fw-wan_blocks
+-A INPUT -i enp3s0 -p icmp -j ACCEPT
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -i enp2s0 -s 192.168.1.1 -d 224.0.0.1 -j DROP -m comment --comment "Ignore multicast from router" 
+-A INPUT -i enp3s0 -s 10.0.1.0/24 -d 255.255.255.255 -j DROP -m comment --comment "Ignore multicast"
+-A INPUT -i enp3s0 -s 10.0.1.0/24 -d 10.0.1.255 -j DROP -m comment --comment "Ignore broadcast"
+-A INPUT -m conntrack --ctstate INVALID -j NFLOG --nflog-group 2 --nflog-prefix "IPT IN INV: "
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -i enp1s0 -m tcp -m conntrack --ctstate NEW -p tcp --dport 22 -j ACCEPT -m comment --comment "SSH"
+-A INPUT -i enp3s0 -m tcp -m conntrack --ctstate NEW -p tcp --dport 22 -j ACCEPT -m comment --comment "SSH"
+-A INPUT -i enp3s0 -m tcp -m conntrack --ctstate NEW -p tcp --dport 80 -j ACCEPT -m comment --comment "HTTP"
+-A INPUT -i enp3s0 -m tcp -m conntrack --ctstate NEW -p tcp --dport 4223 -j ACCEPT -m comment --comment "NTop https"
+-A INPUT -i enp3s0 -m udp -p udp --dport 137 -j ACCEPT -m comment --comment  "WINS name resolution"
+-A INPUT -i enp3s0 -m udp -p udp --dport 53 -j ACCEPT -m comment --comment "DNS"
+-A INPUT -i enp3s0 -m udp -p udp --dport 123 -j ACCEPT -m comment --comment "NTP"
+-A INPUT -m udp -p udp --dport 67:68 -j ACCEPT -m comment --comment "DHCP"
+-A INPUT -j NFLOG --nflog-group 2 --nflog-prefix "IPT IN EOL: "
+# END FILTER INPUT
+#
+
+-A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -m conntrack --ctstate INVALID -j NFLOG --nflog-group 2 --nflog-prefix "IPT FW INV: "
+-A FORWARD -m conntrack --ctstate INVALID -j DROP
+-A FORWARD -j fw-open
+-A FORWARD -j fw-close
+-A FORWARD -j fw-interfaces
+
+# Unneeded, fw-interfaces closes with ACCEPT whats left -->
+#-A FORWARD -j NFLOG --nflog-group 2 --nflog-prefix "IPT FW EOL: "
+#-A FORWARD -j REJECT --reject-with icmp-host-unreachable
+#-A FORWARD -i enp3s0 -o enp2s0 -j ACCEPT
+
+-A OUTPUT -m conntrack --ctstate INVALID -j NFLOG --nflog-group 2 --nflog-prefix "IPT OUT INV: "
+-A OUTPUT -m conntrack --ctstate INVALID -j DROP
+-A OUTPUT -f -j NFLOG --nflog-group 2 --nflog-prefix "IPT OUT FRAG: "
+-A OUTPUT -f -j DROP
+
+#
+-A fw-open -d 10.0.1.12 -p tcp --dport 4224 -j ACCEPT
+-A fw-open -d 10.0.1.12 -p udp --dport 4224 -j ACCEPT
+-A fw-open -d 10.0.1.12 -p tcp --dport 22 -j ACCEPT
+#
+# Block Netbios
+-A fw-close -p udp --dport 137:138 -j DROP -m comment --comment "Block netbios name/dgram"
+-A fw-close -p tcp -m multiport --dports 139,445 -j DROP -m comment --comment "Block netbios session"
+-A fw-close -p udp --dport 1900 -j DROP -m comment --comment "Block uPNP"
+-A fw-close -p tcp --dport 49152 -j DROP -m comment --comment "Block uPNP"
+-A fw-close -d 239.0.0.0/8 -j DROP -m comment --comment "Block uPNP"
+#-A fw-close -m mac --mac-address 54:60:09:0a:12:68 -j DROP -m comment --comment "Block chromecast"
+
+#
+#  
+-A fw-interfaces -i enp3s0 -m conntrack --ctstate NEW -m set --match-set lan_blocks src -j fw-lan_blocks -m comment --comment "Blocked LAN ips"
+#
+# Block unauthorized DNS (TCP and UDP)
+-A fw-interfaces -i enp3s0 -m udp -p udp --dport 53 ! -s 10.0.1.1 -j NFLOG --nflog-group 2 --nflog-prefix "IPT FWD DNS: "
+-A fw-interfaces -i enp3s0 -m udp -p udp --dport 53 ! -s 10.0.1.1 -j DROP
+-A fw-interfaces -i enp3s0 -s 10.0.1.1 -m udp -p udp --dport 53 -j ACCEPT
+#-A fw-interfaces -i enp3s0 -m udp -p udp --dport 53 -j DROP
+-A fw-interfaces -i enp3s0 -m tcp -p tcp --dport 53 ! -s 10.0.1.1 -j NFLOG --nflog-group 2 --nflog-prefix "IPT FWD DNS: "
+-A fw-interfaces -i enp3s0 -m tcp -p tcp --dport 53 ! -s 10.0.1.1 -j DROP
+
+-A fw-interfaces -i enp3s0 -j ACCEPT -m comment --comment "Accept whats left"
+
+#
+-A fw-lan_blocks -j NFLOG --nflog-group 2 --nflog-prefix "IPT LAN BLK: "
+-A fw-lan_blocks -j DROP
+
+COMMIT
+
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:fw-mangle-wan_blocks - [0:0]
+#-A FORWARD -m set --match-set wan_blocks src -j fw-mangle-wan_blocks
+-A FORWARD -j NFQUEUE
+
+#-A fw-mangle-wan_blocks -j NFLOG --nflog-group 2 --nflog-prefix "IPT FWD_W_DRP: "
+#-A fw-mangle-wan_blocks -j DROP
+COMMIT
+
+*raw
+:PREROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:fw-raw-wan_blocks - [0:0]
+#-A PREROUTING -i enp2s0 -m conntrack --ctstate NEW -m set --match-set wan_blocks src -j fw-raw-wan_blocks
+-A PREROUTING -i enp2s0 -m set --match-set wan_blocks src -j fw-raw-wan_blocks
+#-A PREROUTING -i enp3s0 -m conntrack --ctstate NEW -m set --match-set wan_blocks dst -j fw-raw-wan_blocks
+-A PREROUTING -i enp3s0 -m set --match-set wan_blocks dst -j fw-raw-wan_blocks
+-A fw-raw-wan_blocks -j NFLOG --nflog-group 2 --nflog-prefix "IPT WAN_BLOCK: "
+-A fw-raw-wan_blocks -j DROP
+COMMIT
+# 
